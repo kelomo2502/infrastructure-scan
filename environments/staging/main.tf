@@ -240,16 +240,16 @@ module "identity_service" {
   ecs_cluster_id              = module.ecs_cluster.ecs_cluster_id
   ecs_task_execution_role_arn = module.ecs_cluster.ecs_task_execution_role_arn
   ecr_repository_url          = module.ecr_identity_svc.ecr_repository_url
-  image_tag                   = "latest"  # Use the nginx image we pushed
+  image_tag                   = "latest" # Use the nginx image we pushed
 
-  vpc_id              = module.network.vpc_id
-  vpc_cidr_block      = module.network.vpc_cidr_block
-  private_subnet_ids  = module.network.private_subnet_ids
+  vpc_id                 = module.network.vpc_id
+  vpc_cidr_block         = module.network.vpc_cidr_block
+  private_subnet_ids     = module.network.private_subnet_ids
   kong_security_group_id = module.kong_gateway.kong_security_group_id
 
   service_discovery_namespace_id = module.service_discovery.namespace_id
 
-  container_port = 80  # nginx uses port 80
+  container_port = 80 # nginx uses port 80
   cpu            = 256
   memory         = 512
   desired_count  = 1
