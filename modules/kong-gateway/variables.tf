@@ -48,7 +48,7 @@ variable "gateway_subnet_ids" {
 variable "kong_image" {
   description = "Kong Docker image"
   type        = string
-  default     = "kong/kong:latest-ubuntu" 
+  default     = "kong/kong:latest-ubuntu"
 }
 
 variable "kong_cpu" {

@@ -28,7 +28,7 @@ variable "private_subnet_ids" {
 variable "rabbitmq_version" {
   description = "RabbitMQ version"
   type        = string
-  default     = "3.13"  # Updated to valid AWS RabbitMQ version
+  default     = "3.13" # Updated to valid AWS RabbitMQ version
 }
 
 variable "instance_type" {

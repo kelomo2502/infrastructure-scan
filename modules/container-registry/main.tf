@@ -3,7 +3,7 @@
 # Create ECR Repository for a microservice
 resource "aws_ecr_repository" "microservice_ecr_repo" {
   name                 = "${var.project_name}/${var.environment}/${var.service_name}"
-  image_tag_mutability = "IMMUTABLE"    
+  image_tag_mutability = "IMMUTABLE"
 
   image_scanning_configuration {
     scan_on_push = true
@@ -42,7 +42,7 @@ resource "aws_ecr_lifecycle_policy" "microservice_ecr_lifecycle" {
         }
       },
       {
-        rulePriority = 2  # Higher number = lower priority
+        rulePriority = 2 # Higher number = lower priority
         description  = "Keep last 30 images"
         selection = {
           tagStatus   = "any"

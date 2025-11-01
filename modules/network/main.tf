@@ -40,7 +40,7 @@ resource "aws_subnet" "public_subnets" {
   vpc_id                  = aws_vpc.luralite_vpc.id
   cidr_block              = var.public_subnet_cidrs[count.index]
   availability_zone       = data.aws_availability_zones.available.names[count.index]
-  map_public_ip_on_launch = false  # No public IPs for ALB subnets
+  map_public_ip_on_launch = false # No public IPs for ALB subnets
 
   tags = {
     Name        = "${var.project_name}-${var.environment}-public-subnet-${count.index + 1}"
@@ -117,7 +117,7 @@ resource "aws_route_table_association" "public_subnet_associations" {
 
 # Eighth Resource: NAT Gateway EIPs
 resource "aws_eip" "nat_gateway_eips" {
-  count = var.environment == "production" ? length(aws_subnet.public_subnets) : 1
+  count  = var.environment == "production" ? length(aws_subnet.public_subnets) : 1
   domain = "vpc"
 
   tags = {

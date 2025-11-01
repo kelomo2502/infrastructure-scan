@@ -4,13 +4,13 @@
 resource "aws_db_instance" "luralite_postgres" {
   identifier = "${var.project_name}-${var.environment}-postgres"
 
-  engine               = "postgres"
-  engine_version       = var.postgres_version 
-  instance_class       = var.instance_class
-  allocated_storage    = var.allocated_storage
-  storage_type         = "gp3"
-  storage_encrypted    = true
-  kms_key_id          = var.kms_key_id
+  engine            = "postgres"
+  engine_version    = var.postgres_version
+  instance_class    = var.instance_class
+  allocated_storage = var.allocated_storage
+  storage_type      = "gp3"
+  storage_encrypted = true
+  kms_key_id        = var.kms_key_id
 
   db_name  = var.database_name
   username = var.database_username

@@ -19,9 +19,9 @@ output "dns_validation_records" {
   description = "DNS validation records that need to be added to your DNS provider"
   value = {
     for dvo in aws_acm_certificate.luralite_certificate.domain_validation_options : dvo.domain_name => {
-      name   = dvo.resource_record_name
-      value  = dvo.resource_record_value
-      type   = dvo.resource_record_type
+      name  = dvo.resource_record_name
+      value = dvo.resource_record_value
+      type  = dvo.resource_record_type
     }
   }
 }

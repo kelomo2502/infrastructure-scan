@@ -8,7 +8,7 @@ resource "aws_ecs_task_definition" "kong_task" {
   cpu                      = var.kong_cpu
   memory                   = var.kong_memory
   execution_role_arn       = var.ecs_task_execution_role_arn
-  task_role_arn           = aws_iam_role.kong_task_role.arn
+  task_role_arn            = aws_iam_role.kong_task_role.arn
 
   container_definitions = jsonencode([
     {
@@ -109,8 +109,8 @@ resource "aws_ecs_service" "kong_service" {
   launch_type     = "FARGATE"
 
   network_configuration {
-    security_groups = [aws_security_group.kong_sg.id]
-    subnets         = var.gateway_subnet_ids
+    security_groups  = [aws_security_group.kong_sg.id]
+    subnets          = var.gateway_subnet_ids
     assign_public_ip = false
   }
 
