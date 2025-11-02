@@ -1,5 +1,3 @@
-# modules/rabbitmq/main.tf
-
 # MQ RabbitMQ Broker
 resource "aws_mq_broker" "luralite_rabbitmq" {
   broker_name    = "${var.project_name}-${var.environment}-rabbitmq"
@@ -37,12 +35,11 @@ resource "aws_mq_broker" "luralite_rabbitmq" {
   }
 }
 
-# ... rest of the file remains the same ...
-# ... rest of the file remains the same ...
 # RabbitMQ Security Group
 resource "aws_security_group" "rabbitmq_sg" {
   name_prefix = "${var.project_name}-${var.environment}-rabbitmq-sg-"
   vpc_id      = var.vpc_id
+  description = "Security group for RabbitMQ message queue in ${var.environment} environment"  # ← ADD THIS LINE
 
   ingress {
     description = "RabbitMQ AMQP from ECS services"
@@ -61,6 +58,7 @@ resource "aws_security_group" "rabbitmq_sg" {
   }
 
   egress {
+    description = "Allow all outbound traffic"  # ← ADD THIS LINE
     from_port   = 0
     to_port     = 0
     protocol    = "-1"

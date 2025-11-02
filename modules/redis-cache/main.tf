@@ -1,5 +1,3 @@
-# modules/redis-cache/main.tf
-
 # Elasticache Redis Cluster
 resource "aws_elasticache_cluster" "luralite_redis" {
   cluster_id           = "${var.project_name}-${var.environment}-redis"
@@ -64,6 +62,7 @@ resource "aws_elasticache_parameter_group" "luralite_redis_pg" {
 resource "aws_security_group" "redis_sg" {
   name_prefix = "${var.project_name}-${var.environment}-redis-sg-"
   vpc_id      = var.vpc_id
+  description = "Security group for Redis cache in ${var.environment} environment"  # ← ADD THIS LINE
 
   ingress {
     description = "Redis from ECS services"
@@ -74,6 +73,7 @@ resource "aws_security_group" "redis_sg" {
   }
 
   egress {
+    description = "Allow all outbound traffic"  # ← ADD THIS LINE
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
