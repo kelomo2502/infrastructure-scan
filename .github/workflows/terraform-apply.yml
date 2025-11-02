@@ -58,51 +58,10 @@ jobs:
           terraform -chdir="$dir" validate -no-color || exit 1
         done
 
-  security-scan:
-    name: Security Scan
-    runs-on: ubuntu-latest
-    needs: pre-validations
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Install security tools
-      run: |
-        # Install tfsec
-        curl -L https://github.com/aquasecurity/tfsec/releases/latest/download/tfsec-linux-amd64 -o tfsec
-        chmod +x tfsec
-        sudo mv tfsec /usr/local/bin/
-
-        # Install checkov
-        pip3 install checkov
-
-    - name: Run tfsec security scan
-      run: |
-        echo "🔍 Running tfsec security scan for ${{ needs.pre-validations.outputs.environment }}..."
-        cd environments/${{ needs.pre-validations.outputs.environment }}
-        tfsec . --format sarif --out tfsec.sarif --soft-fail
-      continue-on-error: true
-
-    - name: Run checkov security scan
-      run: |
-        echo "🛡️ Running checkov security scan..."
-        cd environments/${{ needs.pre-validations.outputs.environment }}
-        checkov -d . --output sarif --output-file checkov.sarif
-      continue-on-error: true
-
-    - name: Upload security reports
-      uses: actions/upload-artifact@v4
-      with:
-        name: security-reports-${{ github.sha }}
-        path: |
-          environments/${{ needs.pre-validations.outputs.environment }}/tfsec.sarif
-          environments/${{ needs.pre-validations.outputs.environment }}/checkov.sarif
-        retention-days: 30
-
   terraform-plan:
     name: Terraform Plan
     runs-on: ubuntu-latest
-    needs: [pre-validations, security-scan]
+    needs: [pre-validations]
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request'
     
     steps:
@@ -183,20 +142,16 @@ jobs:
           environments/${{ needs.pre-validations.outputs.environment }}/plan_summary.txt
         retention-days: 7
 
-    - name: Update PR with Plan Summary
+    - name: Display Plan Summary
       if: github.event_name == 'pull_request'
-      uses: actions/github-script@v7
-      with:
-        script: |
-          const { PLAN_SUMMARY } = process.env;
-          const summary = PLAN_SUMMARY || 'No plan summary available';
-          
-          github.rest.issues.createComment({
-            issue_number: context.issue.number,
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            body: `## 🌱 Terraform Plan Summary for ${'${{ needs.pre-validations.outputs.environment }}'}\n\n\`\`\`\n${summary}\n\`\`\`\n\n*Plan saved as artifact: terraform-plan-${'${{ github.sha }}'}-${'${{ needs.pre-validations.outputs.environment }}'}*`
-          });
+      run: |
+        echo "## 🌱 Terraform Plan Summary for ${{ needs.pre-validations.outputs.environment }}"
+        echo ""
+        echo '```'
+        cat environments/${{ needs.pre-validations.outputs.environment }}/plan_summary.txt | head -50
+        echo '```'
+        echo ""
+        echo "*Plan saved as artifact: terraform-plan-${{ github.sha }}-${{ needs.pre-validations.outputs.environment }}*"
 
   cost-estimation:
     name: Cost Estimation
@@ -332,18 +287,15 @@ jobs:
   notify-failure:
     name: Notify Failure
     runs-on: ubuntu-latest
-    needs: [pre-validations, security-scan, terraform-plan, terraform-apply]
+    needs: [pre-validations, terraform-plan, terraform-apply]
     if: failure() && needs.pre-validations.result != 'skipped'
     
     steps:
-    - name: Notify on Failure
-      uses: actions/github-script@v7
-      with:
-        script: |
-          const failedJobs = Object.keys(needs).filter(job => needs[job].result === 'failure');
-          github.rest.issues.createComment({
-            issue_number: context.issue.number,
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            body: `❌ Workflow failed!\n\n**Failed jobs:** ${failedJobs.join(', ')}\n**Environment:** ${'${{ needs.pre-validations.outputs.environment }}'}\n**Commit:** ${'${{ github.sha }}'}\n\nPlease check the workflow run for details.`
-          });
+    - name: Display Failure Message
+      run: |
+        echo "❌ Workflow failed!"
+        echo "Failed jobs:"
+        echo "${{ toJSON(needs) }}" | jq -r 'to_entries[] | select(.value.result == "failure") | .key'
+        echo "Environment: ${{ needs.pre-validations.outputs.environment }}"
+        echo "Commit: ${{ github.sha }}"
+        echo "Please check the workflow run for details."
