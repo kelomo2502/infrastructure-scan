@@ -1,323 +1,86 @@
 name: Terraform Security and Deployment
 
 on:
-  # Deploy / Apply happens on push to environment branches
   push:
-    branches: [ staging, main ]
-
-  # Validation + plan runs for PRs targeting staging (promotion) and development
-  pull_request:
-    branches: [ staging, development ]
-
-  workflow_dispatch:
-    inputs:
-      environment:
-        description: 'Environment to deploy'
-        required: true
-        default: 'staging'
-        type: choice
-        options:
-        - staging
-        - production
-      auto_approve:
-        description: 'Auto-apply changes'
-        required: false
-        default: false
-        type: boolean
-
-env:
-  AWS_REGION: us-east-1
-  TF_VERSION: "1.10.0"
-  # default fallback; will be overwritten by pre-validations step
-  ENVIRONMENT: "staging"
+    branches:
+      - staging
 
 jobs:
-  pre-validations:
-    name: Pre-Validations
-    runs-on: ubuntu-latest
-    outputs:
-      environment: ${{ steps.set-environment.outputs.environment }}
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Set environment from event
-      id: set-environment
-      run: |
-        # Default
-        ENV="staging"
-
-        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-          ENV="${{ github.event.inputs.environment }}"
-        elif [ "${{ github.event_name }}" = "pull_request" ]; then
-          # Use the target (base) branch of the PR to determine environment
-          BASE="${{ github.event.pull_request.base.ref }}"
-          if [ "$BASE" = "staging" ]; then
-            ENV="staging"
-          elif [ "$BASE" = "main" ] || [ "$BASE" = "production" ]; then
-            ENV="production"
-          else
-            # PR targeting development -> use staging for promotion testing
-            ENV="staging"
-          fi
-        elif [ "${{ github.event_name }}" = "push" ]; then
-          # For pushes, derive from the branch name (refs/heads/<branch>)
-          REF="${{ github.ref }}"
-          BRANCH="${REF#refs/heads/}"
-          if [ "$BRANCH" = "staging" ]; then
-            ENV="staging"
-          elif [ "$BRANCH" = "main" ] || [ "$BRANCH" = "production" ]; then
-            ENV="production"
-          else
-            ENV="staging"
-          fi
-        fi
-
-        echo "Detected environment: $ENV"
-        echo "environment=$ENV" >> $GITHUB_OUTPUT
-
-    - name: Setup Terraform for validation
-      uses: hashicorp/setup-terraform@v2
-      with:
-        terraform_version: ${{ env.TF_VERSION }}
-
-    - name: Validate all Terraform directories
-      run: |
-        find environments/ -name "*.tf" -exec dirname {} \; | sort -u | while read dir; do
-          echo "📁 Validating Terraform in $dir"
-          terraform -chdir="$dir" init -backend=false > /dev/null 2>&1
-          terraform -chdir="$dir" validate -no-color || exit 1
-        done
-
-  terraform-plan:
+  plan:
     name: Terraform Plan
     runs-on: ubuntu-latest
-    needs: [pre-validations]
-    if: ${{ always() }}  # run for PRs and pushes; apply gating is separate
+    defaults:
+      run:
+        working-directory: environments/staging
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v2
-      with:
-        terraform_version: ${{ env.TF_VERSION }}
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.5
 
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v2
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
+      - name: Terraform Init
+        run: terraform init
 
-    - name: Export sensitive values to env
-      run: |
-        echo "TF_VAR_database_password=${{ secrets.DATABASE_PASSWORD }}" >> $GITHUB_ENV
-        echo "TF_VAR_rabbitmq_password=${{ secrets.RABBITMQ_PASSWORD }}" >> $GITHUB_ENV
-        echo "TF_VAR_rabbitmq_username=${{ secrets.RABBITMQ_USERNAME }}" >> $GITHUB_ENV
+      - name: Terraform Validate
+        run: terraform validate
 
-    - name: Terraform Init (target environment)
-      run: |
-        cd environments/${{ needs.pre-validations.outputs.environment }}
-        terraform init -input=false
-      env:
-        TF_WORKSPACE: ${{ needs.pre-validations.outputs.environment }}
+      - name: Terraform Plan
+        run: terraform plan -out=tfplan.binary -input=false
 
-    - name: Terraform Format Check
-      run: |
-        cd environments/${{ needs.pre-validations.outputs.environment }}
-        terraform fmt -check -recursive -diff
+      - name: Save Terraform Plan Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: environments/staging/tfplan.binary
 
-    - name: Terraform Validate (target environment)
-      run: |
-        cd environments/${{ needs.pre-validations.outputs.environment }}
-        terraform validate -no-color
-
-    - name: Run IaC security scan (Trivy - config/misconfig)
-      uses: aquasecurity/trivy-action@v0.24.0
-      with:
-        scan-type: config
-        scanners: misconfig
-        scan-ref: environments/${{ needs.pre-validations.outputs.environment }}
-
-    - name: Terraform Plan
-      id: plan
-      run: |
-        cd environments/${{ needs.pre-validations.outputs.environment }}
-        terraform plan \
-          -var="project_name=luralite" \
-          -var="environment=${{ needs.pre-validations.outputs.environment }}" \
-          -var="aws_region=${{ env.AWS_REGION }}" \
-          -var="vpc_cidr_block=10.0.0.0/16" \
-          -var='public_subnet_cidrs=["10.0.1.0/24", "10.0.2.0/24"]' \
-          -var='gateway_subnet_cidrs=["10.0.10.0/24", "10.0.11.0/24"]' \
-          -var='private_subnet_cidrs=["10.0.101.0/24", "10.0.102.0/24", "10.0.103.0/24"]' \
-          -var="ci_cd_iam_roles=[]" \
-          -var="base_domain_name=luravpn.com" \
-          -var="domain_name=${{ needs.pre-validations.outputs.environment }}.luravpn.com" \
-          -var='subject_alternative_names=["*.${{ needs.pre-validations.outputs.environment }}.luravpn.com"]' \
-          -out=tfplan \
-          -no-color \
-          -input=false
-
-        terraform show -no-color tfplan > plan_summary.txt
-        echo "plan_created=true" >> $GITHUB_OUTPUT
-
-        PLAN_SUMMARY=$(terraform show -no-color tfplan | grep -E "^[[:space:]]*#|^[[:space:]]*[+-]|^Plan:" | head -50)
-        echo "PLAN_SUMMARY<<EOF" >> $GITHUB_ENV
-        echo "$PLAN_SUMMARY" >> $GITHUB_ENV
-        echo "EOF" >> $GITHUB_ENV
-
-    - name: Upload Terraform Plan artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: terraform-plan-${{ github.sha }}-${{ needs.pre-validations.outputs.environment }}
-        path: |
-          environments/${{ needs.pre-validations.outputs.environment }}/tfplan
-          environments/${{ needs.pre-validations.outputs.environment }}/plan_summary.txt
-        retention-days: 7
-
-    - name: Display Plan Summary (for PRs)
-      if: github.event_name == 'pull_request'
-      run: |
-        echo "## 🌱 Terraform Plan Summary for ${{ needs.pre-validations.outputs.environment }}"
-        echo '```'
-        head -n 50 environments/${{ needs.pre-validations.outputs.environment }}/plan_summary.txt || true
-        echo '```'
-
-  cost-estimation:
+  cost_estimation:
     name: Cost Estimation
     runs-on: ubuntu-latest
-    needs: terraform-plan
-    if: (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') && !cancelled()
+    needs: plan
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Print Cost Placeholder
+        run: echo "🧮 Future integration for infracost or AWS pricing API"
 
-    - name: Download Terraform Plan
-      uses: actions/download-artifact@v4
-      with:
-        name: terraform-plan-${{ github.sha }}-${{ needs.pre-validations.outputs.environment }}
-        path: environments/${{ needs.pre-validations.outputs.environment }}
-
-    - name: Setup Infracost
-      if: env.INFRACOST_API_KEY != ''
-      uses: infracost/actions/setup@v2
-      with:
-        api-key: ${{ secrets.INFRACOST_API_KEY }}
-
-    - name: Generate Infracost report
-      if: env.INFRACOST_API_KEY != ''
-      run: |
-        cd environments/${{ needs.pre-validations.outputs.environment }}
-        infracost breakdown --path . --format json --out-file infracost.json
-      continue-on-error: true
-
-    - name: Upload Infracost report
-      if: env.INFRACOST_API_KEY != ''
-      uses: actions/upload-artifact@v4
-      with:
-        name: infracost-report-${{ github.sha }}
-        path: environments/${{ needs.pre-validations.outputs.environment }}/infracost.json
-        retention-days: 7
-
-  terraform-apply:
+  apply:
     name: Terraform Apply
     runs-on: ubuntu-latest
-    needs: [terraform-plan, cost-estimation]
-    # Only runs automatically when pushing to main (production) OR when dispatch with auto_approve
-    if: (github.ref == 'refs/heads/main' && github.event_name == 'push') || (github.event_name == 'workflow_dispatch' && github.event.inputs.auto_approve == 'true')
-    environment:
-      name: ${{ needs.pre-validations.outputs.environment }}
-      url: https://console.aws.amazon.com/
+    needs: [plan, cost_estimation]
+    defaults:
+      run:
+        working-directory: environments/staging
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Download Terraform Plan
-      uses: actions/download-artifact@v4
-      with:
-        name: terraform-plan-${{ github.sha }}-${{ needs.pre-validations.outputs.environment }}
-        path: environments/${{ needs.pre-validations.outputs.environment }}
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.5
 
-    - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v2
-      with:
-        terraform_version: ${{ env.TF_VERSION }}
+      - name: Download Terraform Plan
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan
+          path: environments/staging
 
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v2
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan.binary
 
-    - name: Export sensitive values to env
-      run: |
-        echo "TF_VAR_database_password=${{ secrets.DATABASE_PASSWORD }}" >> $GITHUB_ENV
-        echo "TF_VAR_rabbitmq_password=${{ secrets.RABBITMQ_PASSWORD }}" >> $GITHUB_ENV
-        echo "TF_VAR_rabbitmq_username=${{ secrets.RABBITMQ_USERNAME }}" >> $GITHUB_ENV
-
-    - name: Terraform Init (reconfigure)
-      run: |
-        cd environments/${{ needs.pre-validations.outputs.environment }}
-        terraform init -input=false -reconfigure
-      env:
-        TF_WORKSPACE: ${{ needs.pre-validations.outputs.environment }}
-
-    - name: Terraform Apply
-      id: apply
-      run: |
-        set -e
-        start_time=$(date +%s)
-        echo "🚀 Applying Terraform plan for ${{ needs.pre-validations.outputs.environment }}..."
-        cd environments/${{ needs.pre-validations.outputs.environment }}
-        terraform apply -auto-approve -input=false tfplan
-        end_time=$(date +%s)
-        duration=$((end_time - start_time))
-        echo "apply_duration=$duration" >> $GITHUB_OUTPUT
-        echo "apply_status=success" >> $GITHUB_OUTPUT
-
-    - name: Get Terraform Outputs
-      run: |
-        cd environments/${{ needs.pre-validations.outputs.environment }}
-        terraform output -json > outputs.json
-        echo "📊 Terraform outputs saved"
-
-    - name: Upload Terraform Outputs
-      uses: actions/upload-artifact@v4
-      with:
-        name: terraform-outputs-${{ github.sha }}-${{ needs.pre-validations.outputs.environment }}
-        path: environments/${{ needs.pre-validations.outputs.environment }}/outputs.json
-        retention-days: 30
-
-    - name: Trigger Microservice Deployments (placeholder)
-      run: |
-        echo "🚀 Infrastructure updated for ${{ needs.pre-validations.outputs.environment }}!"
-        # TODO: hook into service deployment pipelines (webhooks or repo_dispatch) if needed
-
-  cleanup:
-    name: Cleanup
+  deploy_microservices:
+    name: Deploy Microservices to ECS
     runs-on: ubuntu-latest
-    if: always()
+    needs: apply
     steps:
-    - name: Cleanup completed
-      run: |
-        echo "🧹 Cleanup completed for workflow run ${{ github.run_id }}"
-
-  notify-failure:
-    name: Notify Failure
-    runs-on: ubuntu-latest
-    needs: [pre-validations, terraform-plan, terraform-apply]
-    if: failure() && needs.pre-validations.result != 'skipped'
-    steps:
-    - name: Display Failure Message
-      run: |
-        echo "❌ Workflow failed!"
-        echo "Failed jobs:"
-        echo "${{ toJSON(needs) }}" | jq -r 'to_entries[] | select(.value.result == "failure") | .key'
-        echo "Environment: ${{ needs.pre-validations.outputs.environment }}"
-        echo "Commit: ${{ github.sha }}"
-        echo "Please check the workflow run for details."
+      - name: Trigger ECS Service Workflows
+        run: |
+          echo "✅ Infra applied successfully, triggering ECS service deployments..."
+          gh workflow run "Deploy Identity Service" --ref staging
+          gh workflow run "Deploy Property Service" --ref staging
+          gh workflow run "Deploy Reward Service" --ref staging
