@@ -141,8 +141,12 @@ jobs:
     - name: Terraform Plan
       id: plan
       run: |
-        cd environments/${{ needs.pre-validations.outputs.environment }}
-        terraform plan \
+        ENV_DIR="environments/${{ needs.pre-validations.outputs.environment }}"
+        echo "📁 Using directory: $ENV_DIR"
+        echo "📄 Files in that directory:"
+        ls -la "$ENV_DIR"/
+        
+        terraform -chdir="$ENV_DIR" plan \
           -var-file="terraform.tfvars" \
           -var="environment=${{ needs.pre-validations.outputs.environment }}" \
           -out=tfplan \
@@ -150,11 +154,11 @@ jobs:
           -input=false
         
         # Create human-readable plan summary
-        terraform show -no-color tfplan > plan_summary.txt
+        terraform -chdir="$ENV_DIR" show -no-color tfplan > "$ENV_DIR/plan_summary.txt"
         echo "plan_created=true" >> $GITHUB_OUTPUT
         
         # Extract plan summary for PR comment
-        PLAN_SUMMARY=$(terraform show -no-color tfplan | grep -E "^[[:space:]]*#|^[[:space:]]*[+-]|^Plan:" | head -50)
+        PLAN_SUMMARY=$(terraform -chdir="$ENV_DIR" show -no-color tfplan | grep -E "^[[:space:]]*#|^[[:space:]]*[+-]|^Plan:" | head -50)
         echo "PLAN_SUMMARY<<EOF" >> $GITHUB_ENV
         echo "$PLAN_SUMMARY" >> $GITHUB_ENV
         echo "EOF" >> $GITHUB_ENV
