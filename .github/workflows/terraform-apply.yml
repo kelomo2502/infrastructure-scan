@@ -156,7 +156,7 @@ jobs:
     - name: Terraform Init (target environment)
       run: |
         cd environments/${{ needs.pre-validations.outputs.environment }}
-        terraform init -input=false
+        terraform init -input=false -reconfigure
       env:
         TF_WORKSPACE: ${{ needs.pre-validations.outputs.environment }}
 
@@ -216,6 +216,8 @@ jobs:
         path: |
           environments/${{ needs.pre-validations.outputs.environment }}/tfplan
           environments/${{ needs.pre-validations.outputs.environment }}/plan_summary.txt
+          environments/${{ needs.pre-validations.outputs.environment }}/.terraform.lock.hcl
+          environments/${{ needs.pre-validations.outputs.environment }}/.terraform/
         retention-days: 7
 
     - name: Display Plan Summary (for PRs)
@@ -292,11 +294,10 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Download Terraform Plan
+    - name: Download Terraform Plan artifacts
       uses: actions/download-artifact@v4
       with:
         name: ${{ needs.terraform-plan.outputs.artifact_name }}
-        # CRITICAL FIX: Download directly to the environment directory
         path: environments/${{ needs.pre-validations.outputs.environment }}/
 
     - name: Setup Terraform
@@ -317,29 +318,39 @@ jobs:
         echo "TF_VAR_rabbitmq_password=${{ secrets.RABBITMQ_PASSWORD }}" >> $GITHUB_ENV
         echo "TF_VAR_rabbitmq_username=${{ secrets.RABBITMQ_USERNAME }}" >> $GITHUB_ENV
 
-    - name: Terraform Init (reconfigure)
+    - name: Verify Downloaded Files
       run: |
-        cd environments/${{ needs.pre-validations.outputs.environment }}
-        terraform init -input=false -reconfigure
-      env:
-        TF_WORKSPACE: ${{ needs.pre-validations.outputs.environment }}
-
-    - name: Verify Plan File Exists
-      run: |
-        echo "📁 Checking for plan file..."
+        echo "📁 Checking downloaded files..."
         ENV_DIR="environments/${{ needs.pre-validations.outputs.environment }}"
+        echo "Files in $ENV_DIR:"
+        ls -la "$ENV_DIR/" || echo "Directory not found"
+        
         if [ -f "$ENV_DIR/tfplan" ]; then
-          echo "✅ Plan file found at: $ENV_DIR/tfplan"
-          echo "File details:"
-          ls -la "$ENV_DIR/tfplan"
+          echo "✅ Plan file found"
         else
-          echo "❌ Plan file NOT found at: $ENV_DIR/tfplan"
-          echo "Current directory structure in $ENV_DIR:"
-          ls -la "$ENV_DIR/" || echo "Directory not found"
-          echo "Root directory structure:"
-          find . -name "tfplan" -o -name "*.tf" | head -20
+          echo "❌ Plan file missing"
           exit 1
         fi
+        
+        if [ -f "$ENV_DIR/.terraform.lock.hcl" ]; then
+          echo "✅ Lock file found"
+        else
+          echo "❌ Lock file missing"
+        fi
+        
+        if [ -d "$ENV_DIR/.terraform" ]; then
+          echo "✅ Terraform directory found"
+        else
+          echo "❌ Terraform directory missing"
+        fi
+
+    - name: Terraform Init (with lock file)
+      run: |
+        cd environments/${{ needs.pre-validations.outputs.environment }}
+        # Use -backend-config to ensure consistent backend configuration
+        terraform init -input=false -upgrade=false
+      env:
+        TF_WORKSPACE: ${{ needs.pre-validations.outputs.environment }}
 
     - name: Terraform Apply
       id: apply
