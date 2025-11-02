@@ -135,6 +135,21 @@ jobs:
       run: terraform validate -no-color
       working-directory: environments/${{ needs.pre-validations.outputs.environment }}
 
+    - name: Verify terraform.tfvars exists
+      run: |
+        echo "📁 Checking for terraform.tfvars in current directory:"
+        pwd
+        ls -la
+        if [ -f "terraform.tfvars" ]; then
+          echo "✅ terraform.tfvars found"
+          echo "📋 First few lines:"
+          head -3 terraform.tfvars
+        else
+          echo "❌ terraform.tfvars not found in current directory"
+          exit 1
+        fi
+      working-directory: environments/${{ needs.pre-validations.outputs.environment }}
+
     - name: Terraform Plan
       id: plan
       run: |
