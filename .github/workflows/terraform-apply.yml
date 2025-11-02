@@ -110,28 +110,16 @@ jobs:
           terraform -chdir="$dir" validate -no-color || exit 1
         done
 
-  terraform-plan:
-    name: Terraform Plan
+  terraform-plan-and-apply:
+    name: Terraform Plan and Apply
     runs-on: ubuntu-latest
     needs: [pre-validations]
-    # Always run plan regardless of previous job status
-    if: always()
-    outputs:
-      artifact_name: ${{ steps.set-artifact-name.outputs.artifact_name }}
+    if: always() && needs.pre-validations.outputs.should_apply == 'true'
+    environment:
+      name: ${{ needs.pre-validations.outputs.environment }}
+      url: https://console.aws.amazon.com/
 
     steps:
-    - name: Set artifact name
-      id: set-artifact-name
-      run: |
-        ARTIFACT_NAME="terraform-plan-${{ github.sha }}-${{ needs.pre-validations.outputs.environment }}"
-        echo "artifact_name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
-        echo "Artifact name: $ARTIFACT_NAME"
-
-    - name: Check if pre-validations succeeded
-      if: needs.pre-validations.result != 'success'
-      run: |
-        echo "⚠️ Pre-validations failed, but continuing with plan for debugging..."
-        
     - name: Checkout code
       uses: actions/checkout@v4
 
@@ -153,10 +141,10 @@ jobs:
         echo "TF_VAR_rabbitmq_password=${{ secrets.RABBITMQ_PASSWORD }}" >> $GITHUB_ENV
         echo "TF_VAR_rabbitmq_username=${{ secrets.RABBITMQ_USERNAME }}" >> $GITHUB_ENV
 
-    - name: Terraform Init (target environment)
+    - name: Terraform Init
       run: |
         cd environments/${{ needs.pre-validations.outputs.environment }}
-        terraform init -input=false -reconfigure
+        terraform init -input=false
       env:
         TF_WORKSPACE: ${{ needs.pre-validations.outputs.environment }}
 
@@ -165,7 +153,7 @@ jobs:
         cd environments/${{ needs.pre-validations.outputs.environment }}
         terraform fmt -check -recursive -diff
 
-    - name: Terraform Validate (target environment)
+    - name: Terraform Validate
       run: |
         cd environments/${{ needs.pre-validations.outputs.environment }}
         terraform validate -no-color
@@ -209,45 +197,12 @@ jobs:
         echo "$PLAN_SUMMARY" >> $GITHUB_ENV
         echo "EOF" >> $GITHUB_ENV
 
-    - name: Upload Terraform Plan artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ steps.set-artifact-name.outputs.artifact_name }}
-        path: |
-          environments/${{ needs.pre-validations.outputs.environment }}/tfplan
-          environments/${{ needs.pre-validations.outputs.environment }}/plan_summary.txt
-          environments/${{ needs.pre-validations.outputs.environment }}/.terraform.lock.hcl
-          environments/${{ needs.pre-validations.outputs.environment }}/.terraform/
-        retention-days: 7
-
-    - name: Display Plan Summary (for PRs)
-      if: github.event_name == 'pull_request'
+    - name: Display Plan Summary
       run: |
         echo "## 🌱 Terraform Plan Summary for ${{ needs.pre-validations.outputs.environment }}"
         echo '```'
         head -n 50 environments/${{ needs.pre-validations.outputs.environment }}/plan_summary.txt || true
         echo '```'
-
-  cost-estimation:
-    name: Cost Estimation
-    runs-on: ubuntu-latest
-    needs: terraform-plan
-    # Always run cost estimation regardless of plan status
-    if: always()
-
-    steps:
-    - name: Check if terraform-plan succeeded
-      if: needs.terraform-plan.result != 'success'
-      run: |
-        echo "⚠️ Terraform plan failed, but continuing with cost estimation for debugging..."
-        
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Download Terraform Plan
-      uses: actions/download-artifact@v4
-      with:
-        name: ${{ needs.terraform-plan.outputs.artifact_name }}
 
     - name: Setup Infracost
       if: env.INFRACOST_API_KEY != ''
@@ -269,88 +224,6 @@ jobs:
         name: infracost-report-${{ github.sha }}
         path: environments/${{ needs.pre-validations.outputs.environment }}/infracost.json
         retention-days: 7
-
-    - name: Skip message if no Infracost API key
-      if: env.INFRACOST_API_KEY == ''
-      run: |
-        echo "ℹ️  No INFRACOST_API_KEY found, skipping cost estimation"
-
-  terraform-apply:
-    name: Terraform Apply
-    runs-on: ubuntu-latest
-    needs: [terraform-plan, cost-estimation]
-    # Apply for both staging and main branches on push, or manual with auto_approve
-    if: always() && needs.pre-validations.outputs.should_apply == 'true'
-    environment:
-      name: ${{ needs.pre-validations.outputs.environment }}
-      url: https://console.aws.amazon.com/
-
-    steps:
-    - name: Check if previous jobs succeeded
-      if: needs.terraform-plan.result != 'success' || needs.cost-estimation.result != 'success'
-      run: |
-        echo "⚠️ Previous jobs had issues, but attempting apply for debugging..."
-        
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Download Terraform Plan artifacts
-      uses: actions/download-artifact@v4
-      with:
-        name: ${{ needs.terraform-plan.outputs.artifact_name }}
-        path: environments/${{ needs.pre-validations.outputs.environment }}/
-
-    - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v2
-      with:
-        terraform_version: ${{ env.TF_VERSION }}
-
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v2
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
-
-    - name: Export sensitive values to env
-      run: |
-        echo "TF_VAR_database_password=${{ secrets.DATABASE_PASSWORD }}" >> $GITHUB_ENV
-        echo "TF_VAR_rabbitmq_password=${{ secrets.RABBITMQ_PASSWORD }}" >> $GITHUB_ENV
-        echo "TF_VAR_rabbitmq_username=${{ secrets.RABBITMQ_USERNAME }}" >> $GITHUB_ENV
-
-    - name: Verify Downloaded Files
-      run: |
-        echo "📁 Checking downloaded files..."
-        ENV_DIR="environments/${{ needs.pre-validations.outputs.environment }}"
-        echo "Files in $ENV_DIR:"
-        ls -la "$ENV_DIR/" || echo "Directory not found"
-        
-        if [ -f "$ENV_DIR/tfplan" ]; then
-          echo "✅ Plan file found"
-        else
-          echo "❌ Plan file missing"
-          exit 1
-        fi
-        
-        if [ -f "$ENV_DIR/.terraform.lock.hcl" ]; then
-          echo "✅ Lock file found"
-        else
-          echo "❌ Lock file missing"
-        fi
-        
-        if [ -d "$ENV_DIR/.terraform" ]; then
-          echo "✅ Terraform directory found"
-        else
-          echo "❌ Terraform directory missing"
-        fi
-
-    - name: Terraform Init (with lock file)
-      run: |
-        cd environments/${{ needs.pre-validations.outputs.environment }}
-        # Use -backend-config to ensure consistent backend configuration
-        terraform init -input=false -upgrade=false
-      env:
-        TF_WORKSPACE: ${{ needs.pre-validations.outputs.environment }}
 
     - name: Terraform Apply
       id: apply
@@ -383,10 +256,104 @@ jobs:
         echo "🚀 Infrastructure updated for ${{ needs.pre-validations.outputs.environment }}!"
         # TODO: hook into service deployment pipelines (webhooks or repo_dispatch) if needed
 
+  terraform-plan-only:
+    name: Terraform Plan Only
+    runs-on: ubuntu-latest
+    needs: [pre-validations]
+    if: always() && needs.pre-validations.outputs.should_apply != 'true'
+    outputs:
+      artifact_name: ${{ steps.set-artifact-name.outputs.artifact_name }}
+
+    steps:
+    - name: Set artifact name
+      id: set-artifact-name
+      run: |
+        ARTIFACT_NAME="terraform-plan-${{ github.sha }}-${{ needs.pre-validations.outputs.environment }}"
+        echo "artifact_name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
+        echo "Artifact name: $ARTIFACT_NAME"
+
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Export sensitive values to env
+      run: |
+        echo "TF_VAR_database_password=${{ secrets.DATABASE_PASSWORD }}" >> $GITHUB_ENV
+        echo "TF_VAR_rabbitmq_password=${{ secrets.RABBITMQ_PASSWORD }}" >> $GITHUB_ENV
+        echo "TF_VAR_rabbitmq_username=${{ secrets.RABBITMQ_USERNAME }}" >> $GITHUB_ENV
+
+    - name: Terraform Init
+      run: |
+        cd environments/${{ needs.pre-validations.outputs.environment }}
+        terraform init -input=false
+      env:
+        TF_WORKSPACE: ${{ needs.pre-validations.outputs.environment }}
+
+    - name: Terraform Format Check
+      run: |
+        cd environments/${{ needs.pre-validations.outputs.environment }}
+        terraform fmt -check -recursive -diff
+
+    - name: Terraform Validate
+      run: |
+        cd environments/${{ needs.pre-validations.outputs.environment }}
+        terraform validate -no-color
+
+    - name: Install and Run Trivy Security Scan
+      run: |
+        # Install trivy manually
+        curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+        trivy --version
+        
+        echo "🔍 Running Trivy security scan..."
+        cd environments/${{ needs.pre-validations.outputs.environment }}
+        trivy config . --format table --exit-code 0
+      continue-on-error: true
+
+    - name: Terraform Plan
+      id: plan
+      run: |
+        cd environments/${{ needs.pre-validations.outputs.environment }}
+        terraform plan \
+          -var="project_name=luralite" \
+          -var="environment=${{ needs.pre-validations.outputs.environment }}" \
+          -var="aws_region=${{ env.AWS_REGION }}" \
+          -var="vpc_cidr_block=10.0.0.0/16" \
+          -var='public_subnet_cidrs=["10.0.1.0/24", "10.0.2.0/24"]' \
+          -var='gateway_subnet_cidrs=["10.0.10.0/24", "10.0.11.0/24"]' \
+          -var='private_subnet_cidrs=["10.0.101.0/24", "10.0.102.0/24", "10.0.103.0/24"]' \
+          -var="ci_cd_iam_roles=[]" \
+          -var="base_domain_name=luravpn.com" \
+          -var="domain_name=${{ needs.pre-validations.outputs.environment }}.luravpn.com" \
+          -var='subject_alternative_names=["*.${{ needs.pre-validations.outputs.environment }}.luravpn.com"]' \
+          -no-color \
+          -input=false
+
+        terraform show -no-color plan_summary.txt > plan_summary.txt 2>/dev/null || true
+
+    - name: Display Plan Summary (for PRs)
+      if: github.event_name == 'pull_request'
+      run: |
+        echo "## 🌱 Terraform Plan Summary for ${{ needs.pre-validations.outputs.environment }}"
+        echo '```'
+        cat environments/${{ needs.pre-validations.outputs.environment }}/plan_summary.txt || terraform show -no-color
+        echo '```'
+
   cleanup:
     name: Cleanup
     runs-on: ubuntu-latest
-    needs: [pre-validations, terraform-plan, cost-estimation, terraform-apply]
+    needs: [pre-validations, terraform-plan-and-apply, terraform-plan-only]
     if: always()
     steps:
     - name: Cleanup completed
@@ -394,24 +361,22 @@ jobs:
         echo "🧹 Cleanup completed for workflow run ${{ github.run_id }}"
         echo "Job results:"
         echo "- Pre-validations: ${{ needs.pre-validations.result }}"
-        echo "- Terraform Plan: ${{ needs.terraform-plan.result }}"
-        echo "- Cost Estimation: ${{ needs.cost-estimation.result }}"
-        echo "- Terraform Apply: ${{ needs.terraform-apply.result }}"
+        echo "- Terraform Plan and Apply: ${{ needs.terraform-plan-and-apply.result }}"
+        echo "- Terraform Plan Only: ${{ needs.terraform-plan-only.result }}"
 
   notify-failure:
     name: Notify Failure
     runs-on: ubuntu-latest
-    needs: [pre-validations, terraform-plan, cost-estimation, terraform-apply]
-    if: always() && (contains(fromJSON('["failure", "cancelled"]'), needs.pre-validations.result) || contains(fromJSON('["failure", "cancelled"]'), needs.terraform-plan.result) || contains(fromJSON('["failure", "cancelled"]'), needs.cost-estimation.result) || contains(fromJSON('["failure", "cancelled"]'), needs.terraform-apply.result))
+    needs: [pre-validations, terraform-plan-and-apply, terraform-plan-only]
+    if: always() && (contains(fromJSON('["failure", "cancelled"]'), needs.pre-validations.result) || contains(fromJSON('["failure", "cancelled"]'), needs.terraform-plan-and-apply.result) || contains(fromJSON('["failure", "cancelled"]'), needs.terraform-plan-only.result))
     steps:
     - name: Display Failure Message
       run: |
         echo "❌ Workflow completed with failures!"
         echo "Job results:"
         echo "- Pre-validations: ${{ needs.pre-validations.result }}"
-        echo "- Terraform Plan: ${{ needs.terraform-plan.result }}"
-        echo "- Cost Estimation: ${{ needs.cost-estimation.result }}"
-        echo "- Terraform Apply: ${{ needs.terraform-apply.result }}"
+        echo "- Terraform Plan and Apply: ${{ needs.terraform-plan-and-apply.result }}"
+        echo "- Terraform Plan Only: ${{ needs.terraform-plan-only.result }}"
         echo "Environment: ${{ needs.pre-validations.outputs.environment }}"
         echo "Commit: ${{ github.sha }}"
         echo "Please check the workflow run for details."
