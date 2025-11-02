@@ -37,6 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       environment: ${{ steps.set-environment.outputs.environment }}
+      should_apply: ${{ steps.set-should-apply.outputs.should_apply }}
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -75,6 +76,26 @@ jobs:
 
         echo "Detected environment: $ENV"
         echo "environment=$ENV" >> $GITHUB_OUTPUT
+
+    - name: Set should_apply flag
+      id: set-should-apply
+      run: |
+        # Determine if we should auto-apply
+        SHOULD_APPLY="false"
+        
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.auto_approve }}" = "true" ]; then
+          SHOULD_APPLY="true"
+        elif [ "${{ github.event_name }}" = "push" ]; then
+          REF="${{ github.ref }}"
+          BRANCH="${REF#refs/heads/}"
+          # Auto-apply for both staging and main branches
+          if [ "$BRANCH" = "staging" ] || [ "$BRANCH" = "main" ]; then
+            SHOULD_APPLY="true"
+          fi
+        fi
+
+        echo "Should apply: $SHOULD_APPLY"
+        echo "should_apply=$SHOULD_APPLY" >> $GITHUB_OUTPUT
 
     - name: Setup Terraform for validation
       uses: hashicorp/setup-terraform@v2
@@ -256,8 +277,8 @@ jobs:
     name: Terraform Apply
     runs-on: ubuntu-latest
     needs: [terraform-plan, cost-estimation]
-    # Always check conditions but run only when appropriate
-    if: always() && ((github.ref == 'refs/heads/main' && github.event_name == 'push') || (github.event_name == 'workflow_dispatch' && github.event.inputs.auto_approve == 'true'))
+    # Apply for both staging and main branches on push, or manual with auto_approve
+    if: always() && needs.pre-validations.outputs.should_apply == 'true'
     environment:
       name: ${{ needs.pre-validations.outputs.environment }}
       url: https://console.aws.amazon.com/
