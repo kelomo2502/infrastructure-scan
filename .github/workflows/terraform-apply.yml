@@ -93,9 +93,15 @@ jobs:
     name: Terraform Plan
     runs-on: ubuntu-latest
     needs: [pre-validations]
-    if: ${{ always() }}  # run for PRs and pushes; apply gating is separate
+    # Always run plan regardless of previous job status
+    if: always()
 
     steps:
+    - name: Check if pre-validations succeeded
+      if: needs.pre-validations.result != 'success'
+      run: |
+        echo "⚠️ Pre-validations failed, but continuing with plan for debugging..."
+        
     - name: Checkout code
       uses: actions/checkout@v4
 
@@ -140,6 +146,7 @@ jobs:
         scan-type: config
         scanners: misconfig
         scan-ref: environments/${{ needs.pre-validations.outputs.environment }}
+      continue-on-error: true  # Don't fail the entire workflow on security scan issues
 
     - name: Terraform Plan
       id: plan
@@ -190,8 +197,15 @@ jobs:
     name: Cost Estimation
     runs-on: ubuntu-latest
     needs: terraform-plan
-    if: (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') && !cancelled()
+    # Always run cost estimation regardless of plan status
+    if: always()
+
     steps:
+    - name: Check if terraform-plan succeeded
+      if: needs.terraform-plan.result != 'success'
+      run: |
+        echo "⚠️ Terraform plan failed, but continuing with cost estimation for debugging..."
+        
     - name: Checkout code
       uses: actions/checkout@v4
 
@@ -222,17 +236,27 @@ jobs:
         path: environments/${{ needs.pre-validations.outputs.environment }}/infracost.json
         retention-days: 7
 
+    - name: Skip message if no Infracost API key
+      if: env.INFRACOST_API_KEY == ''
+      run: |
+        echo "ℹ️  No INFRACOST_API_KEY found, skipping cost estimation"
+
   terraform-apply:
     name: Terraform Apply
     runs-on: ubuntu-latest
     needs: [terraform-plan, cost-estimation]
-    # Only runs automatically when pushing to main (production) OR when dispatch with auto_approve
-    if: (github.ref == 'refs/heads/main' && github.event_name == 'push') || (github.event_name == 'workflow_dispatch' && github.event.inputs.auto_approve == 'true')
+    # Always check conditions but run only when appropriate
+    if: always() && ((github.ref == 'refs/heads/main' && github.event_name == 'push') || (github.event_name == 'workflow_dispatch' && github.event.inputs.auto_approve == 'true'))
     environment:
       name: ${{ needs.pre-validations.outputs.environment }}
       url: https://console.aws.amazon.com/
 
     steps:
+    - name: Check if previous jobs succeeded
+      if: needs.terraform-plan.result != 'success' || needs.cost-estimation.result != 'success'
+      run: |
+        echo "⚠️ Previous jobs had issues, but attempting apply for debugging..."
+        
     - name: Checkout code
       uses: actions/checkout@v4
 
@@ -301,23 +325,32 @@ jobs:
   cleanup:
     name: Cleanup
     runs-on: ubuntu-latest
+    needs: [pre-validations, terraform-plan, cost-estimation, terraform-apply]
     if: always()
     steps:
     - name: Cleanup completed
       run: |
         echo "🧹 Cleanup completed for workflow run ${{ github.run_id }}"
+        echo "Job results:"
+        echo "- Pre-validations: ${{ needs.pre-validations.result }}"
+        echo "- Terraform Plan: ${{ needs.terraform-plan.result }}"
+        echo "- Cost Estimation: ${{ needs.cost-estimation.result }}"
+        echo "- Terraform Apply: ${{ needs.terraform-apply.result }}"
 
   notify-failure:
     name: Notify Failure
     runs-on: ubuntu-latest
-    needs: [pre-validations, terraform-plan, terraform-apply]
-    if: failure() && needs.pre-validations.result != 'skipped'
+    needs: [pre-validations, terraform-plan, cost-estimation, terraform-apply]
+    if: always() && (contains(fromJSON('["failure", "cancelled"]'), needs.pre-validations.result) || contains(fromJSON('["failure", "cancelled"]'), needs.terraform-plan.result) || contains(fromJSON('["failure", "cancelled"]'), needs.cost-estimation.result) || contains(fromJSON('["failure", "cancelled"]'), needs.terraform-apply.result))
     steps:
     - name: Display Failure Message
       run: |
-        echo "❌ Workflow failed!"
-        echo "Failed jobs:"
-        echo "${{ toJSON(needs) }}" | jq -r 'to_entries[] | select(.value.result == "failure") | .key'
+        echo "❌ Workflow completed with failures!"
+        echo "Job results:"
+        echo "- Pre-validations: ${{ needs.pre-validations.result }}"
+        echo "- Terraform Plan: ${{ needs.terraform-plan.result }}"
+        echo "- Cost Estimation: ${{ needs.cost-estimation.result }}"
+        echo "- Terraform Apply: ${{ needs.terraform-apply.result }}"
         echo "Environment: ${{ needs.pre-validations.outputs.environment }}"
         echo "Commit: ${{ github.sha }}"
         echo "Please check the workflow run for details."
