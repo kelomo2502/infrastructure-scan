@@ -296,6 +296,8 @@ jobs:
       uses: actions/download-artifact@v4
       with:
         name: ${{ needs.terraform-plan.outputs.artifact_name }}
+        # CRITICAL FIX: Download directly to the environment directory
+        path: environments/${{ needs.pre-validations.outputs.environment }}/
 
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v2
@@ -321,6 +323,23 @@ jobs:
         terraform init -input=false -reconfigure
       env:
         TF_WORKSPACE: ${{ needs.pre-validations.outputs.environment }}
+
+    - name: Verify Plan File Exists
+      run: |
+        echo "📁 Checking for plan file..."
+        ENV_DIR="environments/${{ needs.pre-validations.outputs.environment }}"
+        if [ -f "$ENV_DIR/tfplan" ]; then
+          echo "✅ Plan file found at: $ENV_DIR/tfplan"
+          echo "File details:"
+          ls -la "$ENV_DIR/tfplan"
+        else
+          echo "❌ Plan file NOT found at: $ENV_DIR/tfplan"
+          echo "Current directory structure in $ENV_DIR:"
+          ls -la "$ENV_DIR/" || echo "Directory not found"
+          echo "Root directory structure:"
+          find . -name "tfplan" -o -name "*.tf" | head -20
+          exit 1
+        fi
 
     - name: Terraform Apply
       id: apply
