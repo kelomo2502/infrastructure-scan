@@ -91,7 +91,7 @@ jobs:
       continue-on-error: true
 
     - name: Upload security reports
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v3
       with:
         name: security-reports-${{ github.sha }}
         path: |
@@ -121,6 +121,12 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
+    - name: Set all sensitive values as environment variables
+      run: |
+        echo "TF_VAR_database_password=${{ secrets.DATABASE_PASSWORD }}" >> $GITHUB_ENV
+        echo "TF_VAR_rabbitmq_password=${{ secrets.RABBITMQ_PASSWORD }}" >> $GITHUB_ENV
+        echo "TF_VAR_rabbitmq_username=${{ secrets.RABBITMQ_USERNAME }}" >> $GITHUB_ENV
+
     - name: Terraform Init
       run: |
         cd environments/${{ needs.pre-validations.outputs.environment }}
@@ -141,30 +147,35 @@ jobs:
     - name: Terraform Plan
       id: plan
       run: |
-        ENV_DIR="environments/${{ needs.pre-validations.outputs.environment }}"
-        echo "📁 Using directory: $ENV_DIR"
-        echo "📄 Files in that directory:"
-        ls -la "$ENV_DIR"/
-        
-        terraform -chdir="$ENV_DIR" plan \
-          -var-file="terraform.tfvars" \
+        cd environments/${{ needs.pre-validations.outputs.environment }}
+        terraform plan \
+          -var="project_name=luralite" \
           -var="environment=${{ needs.pre-validations.outputs.environment }}" \
+          -var="aws_region=${{ env.AWS_REGION }}" \
+          -var="vpc_cidr_block=10.0.0.0/16" \
+          -var='public_subnet_cidrs=["10.0.1.0/24", "10.0.2.0/24"]' \
+          -var='gateway_subnet_cidrs=["10.0.10.0/24", "10.0.11.0/24"]' \
+          -var='private_subnet_cidrs=["10.0.101.0/24", "10.0.102.0/24", "10.0.103.0/24"]' \
+          -var="ci_cd_iam_roles=[]" \
+          -var="base_domain_name=luravpn.com" \
+          -var="domain_name=${{ needs.pre-validations.outputs.environment }}.luravpn.com" \
+          -var='subject_alternative_names=["*.${{ needs.pre-validations.outputs.environment }}.luravpn.com"]' \
           -out=tfplan \
           -no-color \
           -input=false
         
         # Create human-readable plan summary
-        terraform -chdir="$ENV_DIR" show -no-color tfplan > "$ENV_DIR/plan_summary.txt"
+        terraform show -no-color tfplan > plan_summary.txt
         echo "plan_created=true" >> $GITHUB_OUTPUT
         
         # Extract plan summary for PR comment
-        PLAN_SUMMARY=$(terraform -chdir="$ENV_DIR" show -no-color tfplan | grep -E "^[[:space:]]*#|^[[:space:]]*[+-]|^Plan:" | head -50)
+        PLAN_SUMMARY=$(terraform show -no-color tfplan | grep -E "^[[:space:]]*#|^[[:space:]]*[+-]|^Plan:" | head -50)
         echo "PLAN_SUMMARY<<EOF" >> $GITHUB_ENV
         echo "$PLAN_SUMMARY" >> $GITHUB_ENV
         echo "EOF" >> $GITHUB_ENV
 
     - name: Upload Terraform Plan artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v3
       with:
         name: terraform-plan-${{ github.sha }}-${{ needs.pre-validations.outputs.environment }}
         path: |
@@ -220,7 +231,7 @@ jobs:
 
     - name: Upload Infracost report
       if: env.INFRACOST_API_KEY != ''
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v3
       with:
         name: infracost-report-${{ github.sha }}
         path: environments/${{ needs.pre-validations.outputs.environment }}/infracost.json
@@ -257,6 +268,12 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
+    - name: Set all sensitive values as environment variables
+      run: |
+        echo "TF_VAR_database_password=${{ secrets.DATABASE_PASSWORD }}" >> $GITHUB_ENV
+        echo "TF_VAR_rabbitmq_password=${{ secrets.RABBITMQ_PASSWORD }}" >> $GITHUB_ENV
+        echo "TF_VAR_rabbitmq_username=${{ secrets.RABBITMQ_USERNAME }}" >> $GITHUB_ENV
+
     - name: Terraform Init
       run: |
         cd environments/${{ needs.pre-validations.outputs.environment }}
@@ -286,7 +303,7 @@ jobs:
         echo "📊 Terraform outputs saved"
 
     - name: Upload Terraform Outputs
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v3
       with:
         name: terraform-outputs-${{ github.sha }}-${{ needs.pre-validations.outputs.environment }}
         path: environments/${{ needs.pre-validations.outputs.environment }}/outputs.json
