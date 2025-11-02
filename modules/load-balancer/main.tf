@@ -22,6 +22,7 @@ resource "aws_lb" "luralite_alb" {
 resource "aws_security_group" "alb_sg" {
   name_prefix = "${var.project_name}-${var.environment}-alb-sg-"
   vpc_id      = var.vpc_id
+  description = "Security group for ALB in ${var.environment} environment"
 
   ingress {
     description = "HTTP from Internet"

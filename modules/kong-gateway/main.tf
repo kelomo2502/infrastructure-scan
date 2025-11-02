@@ -144,6 +144,7 @@ resource "aws_ecs_service" "kong_service" {
 resource "aws_security_group" "kong_sg" {
   name_prefix = "${var.project_name}-${var.environment}-kong-sg-"
   vpc_id      = var.vpc_id
+  description = "Security group for Kong API Gateway in ${var.environment} environment"
 
   # Allow HTTP from ALB
   ingress {

@@ -58,6 +58,7 @@ resource "aws_db_subnet_group" "luralite_db_subnet_group" {
 resource "aws_security_group" "rds_sg" {
   name_prefix = "${var.project_name}-${var.environment}-rds-sg-"
   vpc_id      = var.vpc_id
+  description = "Security group for RDS PostgreSQL in ${var.environment} environment"
 
   ingress {
     description = "PostgreSQL from ECS services"

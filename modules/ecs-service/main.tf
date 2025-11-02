@@ -128,6 +128,7 @@ resource "aws_service_discovery_service" "microservice" {
 resource "aws_security_group" "microservice_sg" {
   name_prefix = "${var.project_name}-${var.environment}-${var.service_name}-sg-"
   vpc_id      = var.vpc_id
+  description = "Security group for ${var.service_name} microservice in ${var.environment} environment"
 
   # Allow traffic from Kong API Gateway
   ingress {

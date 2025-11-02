@@ -201,6 +201,7 @@ resource "aws_route_table_association" "private_subnet_associations" {
 resource "aws_security_group" "vpc_endpoint_sg" {
   name_prefix = "${var.project_name}-${var.environment}-vpce-sg-"
   vpc_id      = aws_vpc.luralite_vpc.id
+  description = "Security group for VPC endpoints in ${var.environment} environment" 
 
   ingress {
     description = "HTTPS from VPC"
