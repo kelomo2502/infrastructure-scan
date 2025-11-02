@@ -2,9 +2,9 @@ name: Terraform Security and Deployment
 
 on:
   push:
-    branches: [development]
+    branches: [staging]
   pull_request:
-    branches: [development, main]
+    branches: [staging]
   workflow_dispatch:
     inputs:
       environment:
