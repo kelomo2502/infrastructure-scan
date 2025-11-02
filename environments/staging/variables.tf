@@ -96,3 +96,8 @@ variable "rabbitmq_username" {
   type        = string
   default     = "luralite"
 }
+variable "test_experiment" {
+  description = "Testing PR workflow"
+  type        = string
+  default     = "pr-test-successful"
+}
