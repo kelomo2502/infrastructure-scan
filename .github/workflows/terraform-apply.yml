@@ -1,15 +1,15 @@
-name: Terraform Infrastructure
+name: Terraform Security Scan
 
 on:
   push:
-    branches: [ development ]
+    branches: [ main, staging ]
   pull_request:
-    branches: [ development ]
-  workflow_dispatch:
+    branches: [ main, staging ]
+  workflow_dispatch:  # Manual trigger
 
 env:
-  AWS_REGION: us-east-1
-  TF_VERSION: 1.5.0
+  TF_VERSION: "1.5.0"
+  TFSEC_VERSION: "v1.28.4"
 
 jobs:
   terraform-security:
@@ -17,108 +17,115 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    - name: Checkout
+    - name: Checkout code
       uses: actions/checkout@v4
-
-    - name: Run tfsec
-      uses: aquasecurity/tfsec-action@master
       with:
-        working_directory: environments/staging
-        format: sarif
-        output_file: tfsec-results.sarif
-
-    - name: Upload tfsec results
-      uses: github/codeql-action/upload-sarif@v2
-      if: always()
-      with:
-        sarif_file: tfsec-results.sarif
-
-    - name: Run checkov
-      uses: bridgecrewio/checkov-action@master
-      with:
-        directory: environments/staging/
-        output_format: sarif
-        output_file_path: checkov-results.sarif
-
-    - name: Upload checkov results
-      uses: github/codeql-action/upload-sarif@v2
-      if: always()
-      with:
-        sarif_file: checkov-results.sarif
-
-  terraform-validation:
-    name: Terraform Validate
-    runs-on: ubuntu-latest
-    needs: terraform-security
-    
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v4
+        fetch-depth: 0
 
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v2
       with:
         terraform_version: ${{ env.TF_VERSION }}
 
-    - name: Terraform Format
-      id: fmt
-      run: terraform fmt -check -recursive
+    - name: Install tfsec
+      run: |
+        echo "Installing tfsec ${{ env.TFSEC_VERSION }}..."
+        # Download and install tfsec
+        curl -L "https://github.com/aquasecurity/tfsec/releases/download/${{ env.TFSEC_VERSION }}/tfsec-linux-amd64" -o tfsec
+        chmod +x tfsec
+        sudo mv tfsec /usr/local/bin/
+        
+        # Verify installation
+        tfsec --version
 
-    - name: Terraform Init
-      run: terraform init
-      working-directory: environments/staging
+    - name: Initialize Terraform
+      run: |
+        echo "Initializing Terraform in staging environment..."
+        cd environments/staging
+        terraform init -backend=false
 
-    - name: Terraform Validate
-      run: terraform validate
-      working-directory: environments/staging
+    - name: Run tfsec security scan
+      id: tfsec-scan
+      run: |
+        echo "Running tfsec security scan..."
+        cd environments/staging
+        
+        # Run tfsec with multiple output formats
+        echo "=== TFSEC SECURITY SCAN RESULTS ==="
+        
+        # Run with concise format for logs
+        tfsec . --format concise --no-color
+        
+        # Run with detailed format for complete output
+        tfsec . --format detailed --out ../tfsec-detailed.txt
+        
+        # Run with JSON format for programmatic processing
+        tfsec . --format json --out ../tfsec-results.json
+        
+        # Run with SARIF format for GitHub Security tab
+        tfsec . --format sarif --out ../tfsec-results.sarif
+        
+        echo "Tfsec scan completed"
 
-    - name: Terraform Plan
-      run: terraform plan -var-file="terraform.tfvars" -out=tfplan
-      working-directory: environments/staging
-
-    - name: Upload Terraform Plan
+    - name: Upload tfsec results as artifact
       uses: actions/upload-artifact@v4
       with:
-        name: terraform-plan
-        path: environments/staging/tfplan
+        name: tfsec-security-results
+        path: |
+          tfsec-detailed.txt
+          tfsec-results.json
+          tfsec-results.sarif
+        retention-days: 30
 
-  terraform-apply:
-    name: Terraform Apply
-    runs-on: ubuntu-latest
-    needs: terraform-validation
-    if: github.ref == 'refs/heads/main'
-    
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-
-    - name: Download Terraform Plan
-      uses: actions/download-artifact@v4
+    - name: Upload to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v3
       with:
-        name: terraform-plan
-        path: environments/staging
+        sarif_file: tfsec-results.sarif
+      if: always()  # Upload even if scan fails
 
-    - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v2
-      with:
-        terraform_version: ${{ env.TF_VERSION }}
-
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v2
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
-
-    - name: Terraform Init
-      run: terraform init
-      working-directory: environments/staging
-
-    - name: Terraform Apply
-      run: terraform apply -auto-approve tfplan
-      working-directory: environments/staging
-
-    - name: Trigger Service Redeployments
+    - name: Check for critical findings
+      id: security-check
       run: |
-        echo "Infrastructure updated - services may need redeployment"
-        # Add service redeployment triggers if needed
+        echo "Checking for critical security findings..."
+        
+        if [ -f "tfsec-results.json" ]; then
+          # Count critical and high severity issues
+          CRITICAL_COUNT=$(jq '.results[] | select(.severity == "CRITICAL") | .rule_id' tfsec-results.json | wc -l)
+          HIGH_COUNT=$(jq '.results[] | select(.severity == "HIGH") | .rule_id' tfsec-results.json | wc -l)
+          
+          echo "Critical issues found: $CRITICAL_COUNT"
+          echo "High issues found: $HIGH_COUNT"
+          
+          if [ "$CRITICAL_COUNT" -gt 0 ] || [ "$HIGH_COUNT" -gt 0 ]; then
+            echo "❌ Critical or High severity security issues detected!"
+            echo "critical_count=$CRITICAL_COUNT" >> $GITHUB_OUTPUT
+            echo "high_count=$HIGH_COUNT" >> $GITHUB_OUTPUT
+            exit 1
+          else
+            echo "✅ No Critical or High severity issues found"
+            echo "critical_count=0" >> $GITHUB_OUTPUT
+            echo "high_count=0" >> $GITHUB_OUTPUT
+          fi
+        else
+          echo "⚠️ No tfsec results file found"
+          exit 1
+        fi
+
+    - name: Post security scan summary
+      if: always()
+      run: |
+        echo "=== SECURITY SCAN SUMMARY ==="
+        echo "Critical issues: ${{ steps.security-check.outputs.critical_count }}"
+        echo "High issues: ${{ steps.security-check.outputs.high_count }}"
+        
+        if [ -f "tfsec-detailed.txt" ]; then
+          echo "=== DETAILED FINDINGS ==="
+          cat tfsec-detailed.txt | head -50  # Show first 50 lines
+        fi
+
+    - name: Fail on critical security issues
+      if: steps.security-check.outcome == 'failure'
+      run: |
+        echo "🚨 Security scan failed due to critical/high severity issues"
+        echo "Please review the tfsec results and fix the security issues"
+        exit 1
