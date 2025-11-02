@@ -62,7 +62,7 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.10.0
+          terraform_version: 1.9.5
 
       - name: Download Terraform Plan
         uses: actions/download-artifact@v4
