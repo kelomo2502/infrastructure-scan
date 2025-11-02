@@ -122,37 +122,26 @@ jobs:
         aws-region: ${{ env.AWS_REGION }}
 
     - name: Terraform Init
-      run: terraform init -input=false
-      working-directory: environments/${{ needs.pre-validations.outputs.environment }}
+      run: |
+        cd environments/${{ needs.pre-validations.outputs.environment }}
+        terraform init -input=false
       env:
         TF_WORKSPACE: ${{ needs.pre-validations.outputs.environment }}
 
     - name: Terraform Format Check
-      run: terraform fmt -check -recursive -diff
-      working-directory: environments/${{ needs.pre-validations.outputs.environment }}
+      run: |
+        cd environments/${{ needs.pre-validations.outputs.environment }}
+        terraform fmt -check -recursive -diff
 
     - name: Terraform Validate
-      run: terraform validate -no-color
-      working-directory: environments/${{ needs.pre-validations.outputs.environment }}
-
-    - name: Verify terraform.tfvars exists
       run: |
-        echo "📁 Checking for terraform.tfvars in current directory:"
-        pwd
-        ls -la
-        if [ -f "terraform.tfvars" ]; then
-          echo "✅ terraform.tfvars found"
-          echo "📋 First few lines:"
-          head -3 terraform.tfvars
-        else
-          echo "❌ terraform.tfvars not found in current directory"
-          exit 1
-        fi
-      working-directory: environments/${{ needs.pre-validations.outputs.environment }}
+        cd environments/${{ needs.pre-validations.outputs.environment }}
+        terraform validate -no-color
 
     - name: Terraform Plan
       id: plan
       run: |
+        cd environments/${{ needs.pre-validations.outputs.environment }}
         terraform plan \
           -var-file="terraform.tfvars" \
           -var="environment=${{ needs.pre-validations.outputs.environment }}" \
@@ -169,7 +158,6 @@ jobs:
         echo "PLAN_SUMMARY<<EOF" >> $GITHUB_ENV
         echo "$PLAN_SUMMARY" >> $GITHUB_ENV
         echo "EOF" >> $GITHUB_ENV
-      working-directory: environments/${{ needs.pre-validations.outputs.environment }}
 
     - name: Upload Terraform Plan artifacts
       uses: actions/upload-artifact@v4
@@ -266,8 +254,9 @@ jobs:
         aws-region: ${{ env.AWS_REGION }}
 
     - name: Terraform Init
-      run: terraform init -input=false -reconfigure
-      working-directory: environments/${{ needs.pre-validations.outputs.environment }}
+      run: |
+        cd environments/${{ needs.pre-validations.outputs.environment }}
+        terraform init -input=false -reconfigure
       env:
         TF_WORKSPACE: ${{ needs.pre-validations.outputs.environment }}
 
@@ -278,19 +267,19 @@ jobs:
         start_time=$(date +%s)
         
         echo "🚀 Applying Terraform plan for ${{ needs.pre-validations.outputs.environment }}..."
+        cd environments/${{ needs.pre-validations.outputs.environment }}
         terraform apply -auto-approve -input=false tfplan
         
         end_time=$(date +%s)
         duration=$((end_time - start_time))
         echo "apply_duration=$duration" >> $GITHUB_OUTPUT
         echo "apply_status=success" >> $GITHUB_OUTPUT
-      working-directory: environments/${{ needs.pre-validations.outputs.environment }}
 
     - name: Get Terraform Outputs
       run: |
+        cd environments/${{ needs.pre-validations.outputs.environment }}
         terraform output -json > outputs.json
         echo "📊 Terraform outputs saved"
-      working-directory: environments/${{ needs.pre-validations.outputs.environment }}
 
     - name: Upload Terraform Outputs
       uses: actions/upload-artifact@v4
@@ -304,7 +293,7 @@ jobs:
         echo "🚀 Infrastructure updated! Checking if microservices need redeployment..."
         
         # Extract outputs to determine if services changed
-        if [ -f outputs.json ]; then
+        if [ -f environments/${{ needs.pre-validations.outputs.environment }}/outputs.json ]; then
           echo "📋 Infrastructure outputs available for service discovery"
           # Add webhook triggers or service deployment logic here
         fi
