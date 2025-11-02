@@ -325,6 +325,7 @@ jobs:
       id: plan
       run: |
         cd environments/${{ needs.pre-validations.outputs.environment }}
+        # Run plan and capture full output to file
         terraform plan \
           -var="project_name=luralite" \
           -var="environment=${{ needs.pre-validations.outputs.environment }}" \
@@ -338,16 +339,60 @@ jobs:
           -var="domain_name=${{ needs.pre-validations.outputs.environment }}.luravpn.com" \
           -var='subject_alternative_names=["*.${{ needs.pre-validations.outputs.environment }}.luravpn.com"]' \
           -no-color \
-          -input=false
+          -input=false > plan_output.txt
 
-        terraform show -no-color plan_summary.txt > plan_summary.txt 2>/dev/null || true
+        # Extract the important parts (changes and summary)
+        grep -E "(Plan:|#| ~|  -|  \+)" plan_output.txt | head -100 > plan_summary.txt
+        echo "plan_completed=true" >> $GITHUB_OUTPUT
 
-    - name: Display Plan Summary (for PRs)
+    - name: Upload Plan Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.set-artifact-name.outputs.artifact_name }}
+        path: |
+          environments/${{ needs.pre-validations.outputs.environment }}/plan_output.txt
+          environments/${{ needs.pre-validations.outputs.environment }}/plan_summary.txt
+        retention-days: 7
+
+    - name: Post Plan to PR Comment
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const fs = require('fs');
+          try {
+            const planPath = 'environments/${{ needs.pre-validations.outputs.environment }}/plan_summary.txt';
+            const planSummary = fs.readFileSync(planPath, 'utf8');
+            
+            // Create a clean, readable comment
+            const commentBody = `## 🌱 Terraform Plan for \`${{ needs.pre-validations.outputs.environment }}\`
+
+### Planned Changes:
+\`\`\`diff
+${planSummary}
+\`\`\`
+
+*🔍 Review the changes above before merging. This plan will be applied to the \`${{ needs.pre-validations.outputs.environment }}\` environment.*`;
+
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: commentBody
+            });
+            
+            console.log('✅ Plan posted to PR successfully');
+          } catch (error) {
+            console.log('❌ Failed to post plan to PR:', error.message);
+            // Fallback - at least log the error
+          }
+
+    - name: Display Plan Summary (for logs)
       if: github.event_name == 'pull_request'
       run: |
         echo "## 🌱 Terraform Plan Summary for ${{ needs.pre-validations.outputs.environment }}"
         echo '```'
-        cat environments/${{ needs.pre-validations.outputs.environment }}/plan_summary.txt || terraform show -no-color
+        cat environments/${{ needs.pre-validations.outputs.environment }}/plan_summary.txt || echo "No plan summary available"
         echo '```'
 
   cleanup:
