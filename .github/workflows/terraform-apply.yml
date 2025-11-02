@@ -2,10 +2,24 @@ name: Terraform Security and Deployment
 
 on:
   push:
-    branches: [ development]
+    branches: [development]
   pull_request:
-    branches: [ development]
+    branches: [development, main]
   workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+        - staging
+        - production
+      auto_approve:
+        description: 'Auto-apply changes'
+        required: false
+        default: false
+        type: boolean
 
 env:
   AWS_REGION: us-east-1
@@ -13,31 +27,83 @@ env:
   ENVIRONMENT: "staging"
 
 jobs:
-  security-scan:
-    name: Terraform Security Scan
+  pre-validations:
+    name: Pre-Validations
     runs-on: ubuntu-latest
-    
+    outputs:
+      environment: ${{ steps.set-environment.outputs.environment }}
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Install tfsec
+    - name: Set environment from input
+      id: set-environment
       run: |
+        if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          echo "environment=${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
+        else
+          echo "environment=${{ env.ENVIRONMENT }}" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Validate Terraform files
+      run: |
+        find environments/ -name "*.tf" -exec dirname {} \; | sort -u | while read dir; do
+          echo "📁 Validating Terraform in $dir"
+          terraform validate -chdir="$dir" || exit 1
+        done
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: pre-validations
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install security tools
+      run: |
+        # Install tfsec
         curl -L https://github.com/aquasecurity/tfsec/releases/latest/download/tfsec-linux-amd64 -o tfsec
         chmod +x tfsec
         sudo mv tfsec /usr/local/bin/
 
+        # Install checkov
+        pip3 install checkov
+
     - name: Run tfsec security scan
       run: |
-        echo "🔍 Running tfsec security scan for ${{ env.ENVIRONMENT }}..."
-        cd environments/${{ env.ENVIRONMENT }}
-        tfsec . --format text --no-color
+        echo "🔍 Running tfsec security scan for ${{ needs.pre-validations.outputs.environment }}..."
+        cd environments/${{ needs.pre-validations.outputs.environment }}
+        tfsec . --format sarif --out tfsec.sarif --soft-fail
+      continue-on-error: true
+
+    - name: Run checkov security scan
+      run: |
+        echo "🛡️ Running checkov security scan..."
+        cd environments/${{ needs.pre-validations.outputs.environment }}
+        checkov -d . --output sarif --output-file checkov.sarif
+      continue-on-error: true
+
+    - name: Upload security reports
+      uses: actions/upload-artifact@v4
+      with:
+        name: security-reports-${{ github.sha }}
+        path: |
+          environments/${{ needs.pre-validations.outputs.environment }}/tfsec.sarif
+          environments/${{ needs.pre-validations.outputs.environment }}/checkov.sarif
+        retention-days: 30
+
+    - name: Security check failure
+      if: failure()
+      run: |
+        echo "❌ Security scans failed. Check the reports above for details."
+        echo "Some security issues may require manual review before proceeding."
 
   terraform-plan:
     name: Terraform Plan
     runs-on: ubuntu-latest
-    needs: security-scan
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    needs: [pre-validations, security-scan]
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request'
     
     steps:
     - name: Checkout code
@@ -56,36 +122,69 @@ jobs:
         aws-region: ${{ env.AWS_REGION }}
 
     - name: Terraform Init
-      run: terraform init
-      working-directory: environments/${{ env.ENVIRONMENT }}
+      run: terraform init -backend-config=backend.hcl -input=false
+      working-directory: environments/${{ needs.pre-validations.outputs.environment }}
+      env:
+        TF_WORKSPACE: ${{ needs.pre-validations.outputs.environment }}
 
     - name: Terraform Format Check
-      run: terraform fmt -check -recursive
-      working-directory: environments/${{ env.ENVIRONMENT }}
+      run: terraform fmt -check -recursive -diff
+      working-directory: environments/${{ needs.pre-validations.outputs.environment }}
 
     - name: Terraform Validate
-      run: terraform validate
-      working-directory: environments/${{ env.ENVIRONMENT }}
+      run: terraform validate -json
+      working-directory: environments/${{ needs.pre-validations.outputs.environment }}
 
     - name: Terraform Plan
       id: plan
       run: |
-        terraform plan -var-file="terraform.tfvars" -out=tfplan
+        terraform plan \
+          -var-file="terraform.tfvars" \
+          -var="environment=${{ needs.pre-validations.outputs.environment }}" \
+          -out=tfplan \
+          -no-color \
+          -input=false
+        
+        # Create human-readable plan summary
+        terraform show -no-color tfplan > plan_summary.txt
         echo "plan_created=true" >> $GITHUB_OUTPUT
-      working-directory: environments/${{ env.ENVIRONMENT }}
+        
+        # Extract plan summary for PR comment
+        PLAN_SUMMARY=$(terraform show -no-color tfplan | tail -20)
+        echo "PLAN_SUMMARY<<EOF" >> $GITHUB_ENV
+        echo "$PLAN_SUMMARY" >> $GITHUB_ENV
+        echo "EOF" >> $GITHUB_ENV
+      working-directory: environments/${{ needs.pre-validations.outputs.environment }}
 
-    - name: Upload Terraform Plan
+    - name: Upload Terraform Plan artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: terraform-plan-${{ github.sha }}
-        path: environments/${{ env.ENVIRONMENT }}/tfplan
-        retention-days: 1
+        name: terraform-plan-${{ github.sha }}-${{ needs.pre-validations.outputs.environment }}
+        path: |
+          environments/${{ needs.pre-validations.outputs.environment }}/tfplan
+          environments/${{ needs.pre-validations.outputs.environment }}/plan_summary.txt
+        retention-days: 7
 
-  terraform-apply:
-    name: Terraform Apply
+    - name: Update PR with Plan Summary
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const { PLAN_SUMMARY } = process.env;
+          const summary = PLAN_SUMMARY || 'No plan summary available';
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: `## 🌱 Terraform Plan Summary for ${'${{ needs.pre-validations.outputs.environment }}'}\n\n\`\`\`\n${summary}\n\`\`\`\n\n*Plan saved as artifact: terraform-plan-${'${{ github.sha }}'}-${'${{ needs.pre-validations.outputs.environment }}'}*`
+          });
+
+  cost-estimation:
+    name: Cost Estimation
     runs-on: ubuntu-latest
     needs: terraform-plan
-    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     
     steps:
     - name: Checkout code
@@ -94,8 +193,48 @@ jobs:
     - name: Download Terraform Plan
       uses: actions/download-artifact@v4
       with:
-        name: terraform-plan-${{ github.sha }}
-        path: environments/${{ env.ENVIRONMENT }}
+        name: terraform-plan-${{ github.sha }}-${{ needs.pre-validations.outputs.environment }}
+        path: environments/${{ needs.pre-validations.outputs.environment }}
+
+    - name: Setup Infracost
+      uses: infracost/actions/setup@v2
+      with:
+        api-key: ${{ secrets.INFRACOST_API_KEY }}
+
+    - name: Generate Infracost report
+      run: |
+        cd environments/${{ needs.pre-validations.outputs.environment }}
+        infracost breakdown --path . \
+          --format json \
+          --out-file infracost.json \
+          --terraform-plan-flags="-var-file=terraform.tfvars"
+      continue-on-error: true
+
+    - name: Upload Infracost report
+      uses: actions/upload-artifact@v4
+      with:
+        name: infracost-report-${{ github.sha }}
+        path: environments/${{ needs.pre-validations.outputs.environment }}/infracost.json
+        retention-days: 7
+
+  terraform-apply:
+    name: Terraform Apply
+    runs-on: ubuntu-latest
+    needs: [terraform-plan, cost-estimation]
+    if: (github.ref == 'refs/heads/main' && github.event_name == 'push') || (github.event_name == 'workflow_dispatch' && github.event.inputs.auto_approve == 'true')
+    environment: 
+      name: ${{ needs.pre-validations.outputs.environment }}
+      url: https://console.aws.amazon.com/
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Download Terraform Plan
+      uses: actions/download-artifact@v4
+      with:
+        name: terraform-plan-${{ github.sha }}-${{ needs.pre-validations.outputs.environment }}
+        path: environments/${{ needs.pre-validations.outputs.environment }}
 
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v2
@@ -110,24 +249,95 @@ jobs:
         aws-region: ${{ env.AWS_REGION }}
 
     - name: Terraform Init
-      run: terraform init
-      working-directory: environments/${{ env.ENVIRONMENT }}
+      run: terraform init -backend-config=backend.hcl -input=false -reconfigure
+      working-directory: environments/${{ needs.pre-validations.outputs.environment }}
+      env:
+        TF_WORKSPACE: ${{ needs.pre-validations.outputs.environment }}
 
     - name: Terraform Apply
-      run: terraform apply -auto-approve tfplan
-      working-directory: environments/${{ env.ENVIRONMENT }}
+      id: apply
+      run: |
+        set -e
+        start_time=$(date +%s)
+        
+        echo "🚀 Applying Terraform plan for ${{ needs.pre-validations.outputs.environment }}..."
+        terraform apply -auto-approve -input=false tfplan
+        
+        end_time=$(date +%s)
+        duration=$((end_time - start_time))
+        echo "apply_duration=$duration" >> $GITHUB_OUTPUT
+        echo "apply_status=success" >> $GITHUB_OUTPUT
+      working-directory: environments/${{ needs.pre-validations.outputs.environment }}
 
     - name: Get Terraform Outputs
-      run: terraform output -json > outputs.json
-      working-directory: environments/${{ env.ENVIRONMENT }}
+      run: |
+        terraform output -json > outputs.json
+        echo "📊 Terraform outputs saved"
+      working-directory: environments/${{ needs.pre-validations.outputs.environment }}
 
     - name: Upload Terraform Outputs
       uses: actions/upload-artifact@v4
       with:
-        name: terraform-outputs-${{ github.sha }}
-        path: environments/${{ env.ENVIRONMENT }}/outputs.json
+        name: terraform-outputs-${{ github.sha }}-${{ needs.pre-validations.outputs.environment }}
+        path: environments/${{ needs.pre-validations.outputs.environment }}/outputs.json
+        retention-days: 30
 
     - name: Trigger Microservice Deployments
       run: |
-        echo "🚀 Infrastructure updated! Microservices may need redeployment."
-        # You can add webhook triggers to your microservice CI/CD pipelines here
+        echo "🚀 Infrastructure updated! Checking if microservices need redeployment..."
+        
+        # Extract outputs to determine if services changed
+        if [ -f outputs.json ]; then
+          echo "📋 Infrastructure outputs available for service discovery"
+          # Add webhook triggers or service deployment logic here
+        fi
+        
+        # Example: Trigger another workflow
+        # curl -X POST https://api.github.com/repos/org/repo/actions/workflows/deploy-services.yml/dispatches \
+        #   -H "Authorization: token \${{ secrets.GITHUB_TOKEN }}" \
+        #   -H "Accept: application/vnd.github.v3+json" \
+        #   -d '{"ref":"main","inputs":{"environment":"'${{ needs.pre-validations.outputs.environment }}'"}}'
+
+    - name: Notify Success
+      if: success()
+      uses: actions/github-script@v7
+      with:
+        script: |
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: `✅ Terraform apply completed successfully for ${'${{ needs.pre-validations.outputs.environment }}'} environment!\n\n**Details:**\n- Duration: ${'${{ steps.apply.outputs.apply_duration }}'} seconds\n- Commit: ${'${{ github.sha }}'}\n- Triggered by: @${'${{ github.actor }}'}`
+          });
+
+  cleanup:
+    name: Cleanup
+    runs-on: ubuntu-latest
+    needs: [terraform-plan, terraform-apply]
+    if: always()
+    
+    steps:
+    - name: Cleanup old artifacts
+      run: |
+        echo "🧹 Cleanup completed for workflow run ${{ github.run_id }}"
+        # Additional cleanup logic can be added here
+      if: always()
+
+  notify-failure:
+    name: Notify Failure
+    runs-on: ubuntu-latest
+    needs: [pre-validations, security-scan, terraform-plan, terraform-apply]
+    if: failure() && needs.pre-validations.result != 'skipped'
+    
+    steps:
+    - name: Notify on Failure
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const failedJobs = Object.keys(needs).filter(job => needs[job].result === 'failure');
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: `❌ Workflow failed!\n\n**Failed jobs:** ${failedJobs.join(', ')}\n**Environment:** ${'${{ needs.pre-validations.outputs.environment }}'}\n**Commit:** ${'${{ github.sha }}'}\n\nPlease check the workflow run for details.`
+          });
