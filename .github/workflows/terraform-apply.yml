@@ -175,7 +175,7 @@ jobs:
         echo "EOF" >> $GITHUB_ENV
 
     - name: Upload Terraform Plan artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: terraform-plan-${{ github.sha }}-${{ needs.pre-validations.outputs.environment }}
         path: |
@@ -231,7 +231,7 @@ jobs:
 
     - name: Upload Infracost report
       if: env.INFRACOST_API_KEY != ''
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: infracost-report-${{ github.sha }}
         path: environments/${{ needs.pre-validations.outputs.environment }}/infracost.json
@@ -303,7 +303,7 @@ jobs:
         echo "📊 Terraform outputs saved"
 
     - name: Upload Terraform Outputs
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: terraform-outputs-${{ github.sha }}-${{ needs.pre-validations.outputs.environment }}
         path: environments/${{ needs.pre-validations.outputs.environment }}/outputs.json
