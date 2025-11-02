@@ -384,7 +384,6 @@ ${planSummary}
             console.log('✅ Plan posted to PR successfully');
           } catch (error) {
             console.log('❌ Failed to post plan to PR:', error.message);
-            // Fallback - at least log the error
           }
 
     - name: Display Plan Summary (for logs)
