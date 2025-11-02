@@ -45,11 +45,17 @@ jobs:
           echo "environment=${{ env.ENVIRONMENT }}" >> $GITHUB_OUTPUT
         fi
 
+    - name: Setup Terraform for validation
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+
     - name: Validate Terraform files
       run: |
         find environments/ -name "*.tf" -exec dirname {} \; | sort -u | while read dir; do
           echo "📁 Validating Terraform in $dir"
-          terraform validate -chdir="$dir" || exit 1
+          terraform -chdir="$dir" init -backend=false > /dev/null 2>&1
+          terraform -chdir="$dir" validate -no-color || exit 1
         done
 
   security-scan:
@@ -93,12 +99,6 @@ jobs:
           environments/${{ needs.pre-validations.outputs.environment }}/checkov.sarif
         retention-days: 30
 
-    - name: Security check failure
-      if: failure()
-      run: |
-        echo "❌ Security scans failed. Check the reports above for details."
-        echo "Some security issues may require manual review before proceeding."
-
   terraform-plan:
     name: Terraform Plan
     runs-on: ubuntu-latest
@@ -122,7 +122,7 @@ jobs:
         aws-region: ${{ env.AWS_REGION }}
 
     - name: Terraform Init
-      run: terraform init -backend-config=backend.hcl -input=false
+      run: terraform init -input=false
       working-directory: environments/${{ needs.pre-validations.outputs.environment }}
       env:
         TF_WORKSPACE: ${{ needs.pre-validations.outputs.environment }}
@@ -132,7 +132,7 @@ jobs:
       working-directory: environments/${{ needs.pre-validations.outputs.environment }}
 
     - name: Terraform Validate
-      run: terraform validate -json
+      run: terraform validate -no-color
       working-directory: environments/${{ needs.pre-validations.outputs.environment }}
 
     - name: Terraform Plan
@@ -150,7 +150,7 @@ jobs:
         echo "plan_created=true" >> $GITHUB_OUTPUT
         
         # Extract plan summary for PR comment
-        PLAN_SUMMARY=$(terraform show -no-color tfplan | tail -20)
+        PLAN_SUMMARY=$(terraform show -no-color tfplan | grep -E "^[[:space:]]*#|^[[:space:]]*[+-]|^Plan:" | head -50)
         echo "PLAN_SUMMARY<<EOF" >> $GITHUB_ENV
         echo "$PLAN_SUMMARY" >> $GITHUB_ENV
         echo "EOF" >> $GITHUB_ENV
@@ -184,7 +184,7 @@ jobs:
     name: Cost Estimation
     runs-on: ubuntu-latest
     needs: terraform-plan
-    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') && !cancelled()
     
     steps:
     - name: Checkout code
@@ -197,20 +197,22 @@ jobs:
         path: environments/${{ needs.pre-validations.outputs.environment }}
 
     - name: Setup Infracost
+      if: env.INFRACOST_API_KEY != ''
       uses: infracost/actions/setup@v2
       with:
         api-key: ${{ secrets.INFRACOST_API_KEY }}
 
     - name: Generate Infracost report
+      if: env.INFRACOST_API_KEY != ''
       run: |
         cd environments/${{ needs.pre-validations.outputs.environment }}
         infracost breakdown --path . \
           --format json \
-          --out-file infracost.json \
-          --terraform-plan-flags="-var-file=terraform.tfvars"
+          --out-file infracost.json
       continue-on-error: true
 
     - name: Upload Infracost report
+      if: env.INFRACOST_API_KEY != ''
       uses: actions/upload-artifact@v4
       with:
         name: infracost-report-${{ github.sha }}
@@ -249,7 +251,7 @@ jobs:
         aws-region: ${{ env.AWS_REGION }}
 
     - name: Terraform Init
-      run: terraform init -backend-config=backend.hcl -input=false -reconfigure
+      run: terraform init -input=false -reconfigure
       working-directory: environments/${{ needs.pre-validations.outputs.environment }}
       env:
         TF_WORKSPACE: ${{ needs.pre-validations.outputs.environment }}
@@ -291,37 +293,16 @@ jobs:
           echo "📋 Infrastructure outputs available for service discovery"
           # Add webhook triggers or service deployment logic here
         fi
-        
-        # Example: Trigger another workflow
-        # curl -X POST https://api.github.com/repos/org/repo/actions/workflows/deploy-services.yml/dispatches \
-        #   -H "Authorization: token \${{ secrets.GITHUB_TOKEN }}" \
-        #   -H "Accept: application/vnd.github.v3+json" \
-        #   -d '{"ref":"main","inputs":{"environment":"'${{ needs.pre-validations.outputs.environment }}'"}}'
-
-    - name: Notify Success
-      if: success()
-      uses: actions/github-script@v7
-      with:
-        script: |
-          github.rest.issues.createComment({
-            issue_number: context.issue.number,
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            body: `✅ Terraform apply completed successfully for ${'${{ needs.pre-validations.outputs.environment }}'} environment!\n\n**Details:**\n- Duration: ${'${{ steps.apply.outputs.apply_duration }}'} seconds\n- Commit: ${'${{ github.sha }}'}\n- Triggered by: @${'${{ github.actor }}'}`
-          });
 
   cleanup:
     name: Cleanup
     runs-on: ubuntu-latest
-    needs: [terraform-plan, terraform-apply]
     if: always()
     
     steps:
-    - name: Cleanup old artifacts
+    - name: Cleanup completed
       run: |
         echo "🧹 Cleanup completed for workflow run ${{ github.run_id }}"
-        # Additional cleanup logic can be added here
-      if: always()
 
   notify-failure:
     name: Notify Failure
