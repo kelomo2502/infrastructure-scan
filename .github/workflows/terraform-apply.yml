@@ -140,13 +140,16 @@ jobs:
         cd environments/${{ needs.pre-validations.outputs.environment }}
         terraform validate -no-color
 
-    - name: Run IaC security scan (Trivy - config/misconfig)
-      uses: aquasecurity/trivy-action@v0.24.0
-      with:
-        scan-type: config
-        scanners: misconfig
-        scan-ref: environments/${{ needs.pre-validations.outputs.environment }}
-      continue-on-error: true  # Don't fail the entire workflow on security scan issues
+    - name: Install and Run Trivy Security Scan
+      run: |
+        # Install trivy manually
+        curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+        trivy --version
+        
+        echo "🔍 Running Trivy security scan..."
+        cd environments/${{ needs.pre-validations.outputs.environment }}
+        trivy config . --format table --exit-code 0
+      continue-on-error: true
 
     - name: Terraform Plan
       id: plan
