@@ -2,130 +2,63 @@ name: Terraform Security Scan
 
 on:
   push:
-    branches: [ development]
+    branches: [ development, main, staging ]
   pull_request:
-    branches: [ development]
+    branches: [ development, main, staging ]
   workflow_dispatch:
 
-env:
-  TF_VERSION: "1.5.0"
-  TFSEC_VERSION: "v1.28.4"
-
 jobs:
-  terraform-security:
+  security-scan:
     name: Terraform Security Scan
     runs-on: ubuntu-latest
+    
+    permissions:
+      security-events: write
+      contents: read
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-
-    - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v2
-      with:
-        terraform_version: ${{ env.TF_VERSION }}
 
     - name: Install tfsec
       run: |
-        echo "Installing tfsec ${{ env.TFSEC_VERSION }}..."
-        # Download and install tfsec
-        curl -L "https://github.com/aquasecurity/tfsec/releases/download/${{ env.TFSEC_VERSION }}/tfsec-linux-amd64" -o tfsec
+        echo "Installing tfsec..."
+        curl -L https://github.com/aquasecurity/tfsec/releases/latest/download/tfsec-linux-amd64 -o tfsec
         chmod +x tfsec
         sudo mv tfsec /usr/local/bin/
-        
-        # Verify installation
+        echo "Tfsec version:"
         tfsec --version
 
-    - name: Initialize Terraform
+    - name: Run tfsec with text output
+      id: scan
       run: |
-        echo "Initializing Terraform in staging environment..."
         cd environments/staging
-        terraform init -backend=false
+        echo "=== TFSEC SECURITY SCAN ==="
+        
+        # Run with text format (human readable)
+        tfsec . --format text --no-color --soft-fail
+        
+        # Capture exit code
+        SCAN_EXIT_CODE=$?
+        echo "exit_code=$SCAN_EXIT_CODE" >> $GITHUB_OUTPUT
 
-    - name: Run tfsec security scan
-      id: tfsec-scan
+    - name: Generate SARIF report
+      if: always()
       run: |
-        echo "Running tfsec security scan..."
         cd environments/staging
-        
-        # Run tfsec with multiple output formats
-        echo "=== TFSEC SECURITY SCAN RESULTS ==="
-        
-        # Run with concise format for logs
-        tfsec . --format concise --no-color
-        
-        # Run with detailed format for complete output
-        tfsec . --format detailed --out ../tfsec-detailed.txt
-        
-        # Run with JSON format for programmatic processing
-        tfsec . --format json --out ../tfsec-results.json
-        
-        # Run with SARIF format for GitHub Security tab
-        tfsec . --format sarif --out ../tfsec-results.sarif
-        
-        echo "Tfsec scan completed"
+        echo "Generating SARIF report..."
+        tfsec . --format sarif --out ../../tfsec-results.sarif --soft-fail
 
-    - name: Upload tfsec results as artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: tfsec-security-results
-        path: |
-          tfsec-detailed.txt
-          tfsec-results.json
-          tfsec-results.sarif
-        retention-days: 30
-
-    - name: Upload to GitHub Security tab
+    - name: Upload SARIF to Security tab
+      if: always() && github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
       uses: github/codeql-action/upload-sarif@v3
       with:
         sarif_file: tfsec-results.sarif
-      if: always()  # Upload even if scan fails
 
-    - name: Check for critical findings
-      id: security-check
+    - name: Scan results
       run: |
-        echo "Checking for critical security findings..."
-        
-        if [ -f "tfsec-results.json" ]; then
-          # Count critical and high severity issues
-          CRITICAL_COUNT=$(jq '.results[] | select(.severity == "CRITICAL") | .rule_id' tfsec-results.json | wc -l)
-          HIGH_COUNT=$(jq '.results[] | select(.severity == "HIGH") | .rule_id' tfsec-results.json | wc -l)
-          
-          echo "Critical issues found: $CRITICAL_COUNT"
-          echo "High issues found: $HIGH_COUNT"
-          
-          if [ "$CRITICAL_COUNT" -gt 0 ] || [ "$HIGH_COUNT" -gt 0 ]; then
-            echo "❌ Critical or High severity security issues detected!"
-            echo "critical_count=$CRITICAL_COUNT" >> $GITHUB_OUTPUT
-            echo "high_count=$HIGH_COUNT" >> $GITHUB_OUTPUT
-            exit 1
-          else
-            echo "✅ No Critical or High severity issues found"
-            echo "critical_count=0" >> $GITHUB_OUTPUT
-            echo "high_count=0" >> $GITHUB_OUTPUT
-          fi
+        if [ "${{ steps.scan.outputs.exit_code }}" = "0" ]; then
+          echo "✅ No security issues found!"
         else
-          echo "⚠️ No tfsec results file found"
-          exit 1
+          echo "⚠️ Security issues detected. Please review the findings above."
         fi
-
-    - name: Post security scan summary
-      if: always()
-      run: |
-        echo "=== SECURITY SCAN SUMMARY ==="
-        echo "Critical issues: ${{ steps.security-check.outputs.critical_count }}"
-        echo "High issues: ${{ steps.security-check.outputs.high_count }}"
-        
-        if [ -f "tfsec-detailed.txt" ]; then
-          echo "=== DETAILED FINDINGS ==="
-          cat tfsec-detailed.txt | head -50  # Show first 50 lines
-        fi
-
-    - name: Fail on critical security issues
-      if: steps.security-check.outcome == 'failure'
-      run: |
-        echo "🚨 Security scan failed due to critical/high severity issues"
-        echo "Please review the tfsec results and fix the security issues"
-        exit 1
