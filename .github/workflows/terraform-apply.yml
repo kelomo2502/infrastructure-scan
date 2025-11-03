@@ -1,4 +1,4 @@
-name: Terraform Security and Deployment
+name: Terraform Security and Deployment to AWS ECS
 
 on:
   # Deploy / Apply happens on push to environment branches
